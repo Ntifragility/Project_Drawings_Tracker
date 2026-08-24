@@ -413,7 +413,11 @@ class SeleniumRunner:
             print("Clicking 'Exportar'...")
             self._click_element(export_button)
         except TimeoutException as e:
+            self._capture_diagnostic("export_button_failure")
             raise RuntimeError(f"Could not click Exportar button: {e}")
+
+        # Capture existing files BEFORE clicking Excel so fast downloads aren't missed
+        existing_files = set(self.download_dir.iterdir())
 
         try:
             excel_option = wait.until(
@@ -427,11 +431,10 @@ class SeleniumRunner:
             print("Selecting 'Excel'...")
             self._click_element(excel_option)
         except TimeoutException as e:
+            self._capture_diagnostic("excel_option_failure")
             raise RuntimeError(f"Could not click Excel option: {e}")
 
         print("Waiting for the export to complete...")
-        existing_files = set(self.download_dir.iterdir())
-        
         downloaded_file = None
         timeout_time = time.time() + 60
         while time.time() < timeout_time:
@@ -447,10 +450,14 @@ class SeleniumRunner:
             time.sleep(1)
 
         if not downloaded_file:
-            for f in self.download_dir.glob("*.xlsx"):
-                if f not in existing_files:
-                    downloaded_file = f
-                    break
+            # Fallback: check for any recent .xlsx file modified in the last 60 seconds
+            now = time.time()
+            recent_xlsx = [
+                f for f in self.download_dir.glob("*.xlsx")
+                if (now - f.stat().st_mtime) < 90
+            ]
+            if recent_xlsx:
+                downloaded_file = max(recent_xlsx, key=lambda p: p.stat().st_mtime)
 
         if downloaded_file:
             import datetime
@@ -469,6 +476,7 @@ class SeleniumRunner:
                 print(f"Could not rename downloaded file to {target_path.name}: {e}")
                 return downloaded_file
 
+        self._capture_diagnostic("export_excel_timeout")
         raise RuntimeError("Download timed out or failed to complete.")
 
     def _wait_and_move_new_file(self, existing_files: set[Path], drawing_id: str | None = None, timeout: int = 30) -> bool:
