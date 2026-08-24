@@ -233,55 +233,47 @@ def main() -> None:
 
             # Download the changed drawings
             if change_types:
-                # Try parallel download if credentials.json exists
-                creds_path = Path("credentials.json")
-                if creds_path.exists():
-                    from drawings_tracker.parallel_downloader import (
-                        load_credentials,
-                        ParallelDownloader,
-                    )
-                    try:
-                        credentials = load_credentials(creds_path)
-                    except Exception as creds_err:
-                        print(f"Error loading credentials.json: {creds_err}")
-                        print("Falling back to sequential downloads.")
-                        credentials = None
+                from drawings_tracker.parallel_downloader import (
+                    configure_parallel_downloader,
+                    ParallelDownloader,
+                )
+                print(f"\n{len(change_types)} changed drawing(s) ready for download.")
+                mode_choice = abort_monitor.wait_for_command(
+                    "Choose download mode:\n"
+                    "  [P]arallel downloads (multi-threaded / multi-account)\n"
+                    "  [S]equential downloads (one-by-one interactive)\n"
+                    "Selection [default: P]: "
+                ).strip().lower()
 
-                    if credentials:
-                        drawing_list = list(change_types.keys())
-                        print(
-                            f"\nParallel download mode: {len(drawing_list)} drawings "
-                            f"across {len(credentials)} account(s)."
-                        )
-                        confirmation = abort_monitor.wait_for_command(
-                            "Press Enter to start parallel downloads "
-                            "(or type ABORT to cancel): "
-                        ).strip().lower()
-                        if confirmation not in {"abort", "stop", "exit"}:
-                            abort_monitor.check()
-                            # Close the single-account browser; parallel workers
-                            # create their own isolated sessions.
-                            close_browser()
-                            downloader = ParallelDownloader(
-                                drawing_ids=drawing_list,
-                                credentials=credentials,
-                                download_dir=downloads_dir,
-                                threads_per_account=5,
-                                headless=True,
-                                abort_event=abort_monitor._aborted,
-                            )
-                            results = downloader.run()
-                            downloader.print_summary(results)
-                        else:
-                            print("Parallel downloads cancelled by user.")
-                    else:
-                        # credentials failed to load — fall through to sequential
-                        _sequential_download(
-                            change_types, runner, abort_monitor
-                        )
-                else:
-                    # No credentials.json — original sequential behaviour
+                if mode_choice in {"s", "sequential"}:
                     _sequential_download(change_types, runner, abort_monitor)
+                else:
+                    config = configure_parallel_downloader(abort_monitor)
+                    if config:
+                        credentials, threads_per_account, headless = config
+                        drawing_list = list(change_types.keys())
+                        abort_monitor.check()
+
+                        print(
+                            f"\nStarting parallel downloads: {len(drawing_list)} drawings "
+                            f"across {len(credentials)} account(s) × {threads_per_account} thread(s) "
+                            f"({'headless' if headless else 'visible mode'})..."
+                        )
+                        # Close the initial export browser so worker threads take over
+                        close_browser()
+                        downloader = ParallelDownloader(
+                            drawing_ids=drawing_list,
+                            credentials=credentials,
+                            download_dir=downloads_dir,
+                            threads_per_account=threads_per_account,
+                            headless=headless,
+                            abort_event=abort_monitor._aborted,
+                        )
+                        results = downloader.run()
+                        downloader.print_summary(results)
+                    else:
+                        print("Parallel setup cancelled. Falling back to sequential mode.")
+                        _sequential_download(change_types, runner, abort_monitor)
                 
             print(f"==========================================\n")
         else:

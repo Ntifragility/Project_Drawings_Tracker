@@ -206,6 +206,13 @@ class SeleniumRunner:
         return self._find_first_element(candidates, timeout=2.0)
 
     def _ensure_filtros_unfolded(self, timeout: int = 15) -> None:
+        try:
+            search_input = self.driver.find_element(By.ID, "Codigo")
+            if search_input.is_displayed() and search_input.is_enabled():
+                return
+        except Exception:
+            pass
+
         wait = WebDriverWait(self.driver, timeout)
         try:
             toggle_anchor = wait.until(EC.presence_of_element_located((By.XPATH, "//a[contains(@onclick, 'filtroToogle')]")))
@@ -509,7 +516,16 @@ class SeleniumRunner:
 
         # 1. Locate search input, enter drawing tag, and click Buscar button
         try:
+            # Wait for any stray loading masks to clear
+            try:
+                WebDriverWait(self.driver, 5).until_not(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .loading-mask, .k-loading-image, .loading, .spinner"))
+                )
+            except TimeoutException:
+                pass
+
             search_input = wait.until(EC.element_to_be_clickable((By.ID, "Codigo")))
+            self.driver.execute_script("arguments[0].value = '';", search_input)
             search_input.clear()
             search_input.send_keys(drawing_id)
             print(f"Pasted drawing tag: '{drawing_id}' into search field...")
@@ -517,7 +533,8 @@ class SeleniumRunner:
             buscar_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@onclick, 'buscarClick') or contains(@class, 'bgm-orange')]")))
             self._click_element(buscar_btn)
             print("Clicked search 'Buscar' button...")
-        except TimeoutException as e:
+        except Exception as e:
+            self._capture_diagnostic(f"{drawing_id}_search_failure")
             raise RuntimeError(f"Could not locate search elements: {e}")
 
         # 2. Wait for dynamic content reload (loading masks to disappear)

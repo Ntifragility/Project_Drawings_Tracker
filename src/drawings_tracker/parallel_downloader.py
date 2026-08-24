@@ -123,6 +123,89 @@ class ProgressReporter:
 
 
 # ---------------------------------------------------------------------------
+# Interactive configuration helper
+# ---------------------------------------------------------------------------
+
+def configure_parallel_downloader(abort_monitor) -> tuple[list[AccountCredentials], int, bool] | None:
+    """Interactively prompt the user for parallel download settings:
+    - Number of accounts and their credentials
+    - Number of threads per account
+    - Visible vs Headless mode
+
+    Returns (credentials_list, threads_per_account, headless) or None if cancelled.
+    """
+    creds_path = Path("credentials.json")
+    credentials: list[AccountCredentials] = []
+
+    if creds_path.exists():
+        try:
+            saved_creds = load_credentials(creds_path)
+            print(f"\nFound saved credentials.json with {len(saved_creds)} account(s):")
+            for c in saved_creds:
+                print(f"  • {c.username}")
+            
+            use_saved = abort_monitor.wait_for_command(
+                "\nUse these saved credentials? (Y/n): "
+            ).strip().lower()
+            if use_saved not in {"n", "no"}:
+                credentials = saved_creds
+        except Exception as e:
+            print(f"Warning: Could not parse saved credentials.json ({e}).")
+
+    if not credentials:
+        print("\n--- Parallel Accounts Setup ---")
+        try:
+            raw_num = abort_monitor.wait_for_command(
+                "How many portal accounts will you use for parallel downloading? [default: 1]: "
+            ).strip()
+            num_accounts = int(raw_num) if raw_num.isdigit() and int(raw_num) > 0 else 1
+        except Exception:
+            num_accounts = 1
+
+        for i in range(1, num_accounts + 1):
+            print(f"\n[Account {i}/{num_accounts}]")
+            user = abort_monitor.wait_for_command(f"  Username for Account {i}: ").strip()
+            pwd = abort_monitor.wait_for_command(f"  Password for Account {i}: ").strip()
+            if user and pwd:
+                credentials.append(AccountCredentials(username=user, password=pwd))
+            else:
+                print("  Skipped invalid account credentials.")
+
+        if not credentials:
+            print("No valid account credentials provided.")
+            return None
+
+        # Offer to save credentials
+        save_choice = abort_monitor.wait_for_command(
+            "\nSave these credentials to credentials.json for future runs? (y/N): "
+        ).strip().lower()
+        if save_choice in {"y", "yes"}:
+            try:
+                creds_data = [{"username": c.username, "password": c.password} for c in credentials]
+                creds_path.write_text(json.dumps(creds_data, indent=2), encoding="utf-8")
+                print("Saved credentials to credentials.json.")
+            except Exception as save_err:
+                print(f"Could not save credentials.json: {save_err}")
+
+    # Prompt for threads per account
+    try:
+        raw_threads = abort_monitor.wait_for_command(
+            "\nHow many parallel threads (browser instances) per account? [default: 2]: "
+        ).strip()
+        threads_per_account = int(raw_threads) if raw_threads.isdigit() and int(raw_threads) > 0 else 2
+    except Exception:
+        threads_per_account = 2
+
+    # Prompt for visible vs headless mode (default visible = False for headless)
+    raw_mode = abort_monitor.wait_for_command(
+        "Run browsers in visible window mode or headless mode? (V=Visible / h=Headless) [default: V]: "
+    ).strip().lower()
+    headless = (raw_mode in {"h", "headless"})
+
+    return credentials, threads_per_account, headless
+
+
+# ---------------------------------------------------------------------------
 # Worker session — one Selenium driver per thread
 # ---------------------------------------------------------------------------
 
@@ -161,16 +244,38 @@ class WorkerSession:
         from drawings_tracker.selenium_runner import SeleniumRunner
 
         runner: SeleniumRunner | None = None
+        # Try session initialization up to 3 times
+        max_init_attempts = 3
+        initialized = False
+
+        for attempt in range(1, max_init_attempts + 1):
+            if self.abort_event.is_set():
+                return
+            try:
+                if runner is not None:
+                    try:
+                        runner.close()
+                    except Exception:
+                        pass
+                runner = SeleniumRunner(
+                    download_dir=self.temp_dir, headless=self.headless
+                )
+                runner.login(self.portal_url, self.credential.username, self.credential.password)
+                print(f"  [{self.worker_id}] Logged in as {self.credential.username}")
+
+                runner.navigate_to_explorer()
+                print(f"  [{self.worker_id}] Navigator ready on Explorer page")
+                initialized = True
+                break
+            except Exception as init_err:
+                print(f"  [{self.worker_id}] Session init attempt {attempt}/{max_init_attempts} failed: {init_err}")
+                time.sleep(3.0)
+
+        if not initialized or runner is None:
+            print(f"  [{self.worker_id}] Failed to initialize after {max_init_attempts} attempts. Aborting worker.")
+            return
+
         try:
-            runner = SeleniumRunner(
-                download_dir=self.temp_dir, headless=self.headless
-            )
-            runner.login(self.portal_url, self.credential.username, self.credential.password)
-            print(f"  [{self.worker_id}] Logged in as {self.credential.username}")
-
-            runner.navigate_to_explorer()
-            print(f"  [{self.worker_id}] Navigator ready on Explorer page")
-
             while not self.abort_event.is_set():
                 try:
                     drawing_id = self.work_queue.get_nowait()
@@ -283,7 +388,7 @@ class AccountWorkerPool:
             self._threads.append(thread)
 
             # Stagger launches slightly to avoid simultaneous login storms
-            time.sleep(1.0)
+            time.sleep(3.0)
 
     def join(self, timeout: float | None = None) -> None:
         """Wait for all worker threads to finish."""
