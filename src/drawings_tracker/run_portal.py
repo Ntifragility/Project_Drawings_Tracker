@@ -54,6 +54,28 @@ class AbortMonitor:
                 continue
 
 
+def _sequential_download(change_types: dict, runner, abort_monitor) -> None:
+    """Original sequential download loop — one drawing at a time with
+    interactive confirmation prompts."""
+    print(f"\nStarting individual drawing downloads ({len(change_types)} files)...")
+    for i, drawing_id in enumerate(change_types.keys(), 1):
+        user_input = abort_monitor.wait_for_command(
+            f"\n[{i}/{len(change_types)}] Ready to download drawing: "
+            f"'{drawing_id}'. Press Enter to proceed (or type 'skip' "
+            "to skip, 'ABORT' to stop): "
+        ).strip().lower()
+        if user_input == "skip":
+            print(f"Skipping download for '{drawing_id}'.")
+            continue
+        try:
+            abort_monitor.check()
+            runner.download_drawing(drawing_id)
+            abort_monitor.check()
+        except Exception as download_err:
+            abort_monitor.check()
+            print(f"Error downloading '{drawing_id}': {download_err}")
+
+
 def main() -> None:
     url = "https://sgc.cumbra.com.pe/AppMSSO/"
     from pathlib import Path
@@ -209,25 +231,57 @@ def main() -> None:
             else:
                 print("No changes detected. CSV file was not created.")
 
-            # Download the changed drawings one by one with user confirmation in terminal
+            # Download the changed drawings
             if change_types:
-                print(f"\nStarting individual drawing downloads ({len(change_types)} files)...")
-                for i, drawing_id in enumerate(change_types.keys(), 1):
-                    user_input = abort_monitor.wait_for_command(
-                        f"\n[{i}/{len(change_types)}] Ready to download drawing: "
-                        f"'{drawing_id}'. Press Enter to proceed (or type 'skip' "
-                        "to skip, 'ABORT' to stop): "
-                    ).strip().lower()
-                    if user_input == "skip":
-                        print(f"Skipping download for '{drawing_id}'.")
-                        continue
+                # Try parallel download if credentials.json exists
+                creds_path = Path("credentials.json")
+                if creds_path.exists():
+                    from drawings_tracker.parallel_downloader import (
+                        load_credentials,
+                        ParallelDownloader,
+                    )
                     try:
-                        abort_monitor.check()
-                        runner.download_drawing(drawing_id)
-                        abort_monitor.check()
-                    except Exception as download_err:
-                        abort_monitor.check()
-                        print(f"Error downloading '{drawing_id}': {download_err}")
+                        credentials = load_credentials(creds_path)
+                    except Exception as creds_err:
+                        print(f"Error loading credentials.json: {creds_err}")
+                        print("Falling back to sequential downloads.")
+                        credentials = None
+
+                    if credentials:
+                        drawing_list = list(change_types.keys())
+                        print(
+                            f"\nParallel download mode: {len(drawing_list)} drawings "
+                            f"across {len(credentials)} account(s)."
+                        )
+                        confirmation = abort_monitor.wait_for_command(
+                            "Press Enter to start parallel downloads "
+                            "(or type ABORT to cancel): "
+                        ).strip().lower()
+                        if confirmation not in {"abort", "stop", "exit"}:
+                            abort_monitor.check()
+                            # Close the single-account browser; parallel workers
+                            # create their own isolated sessions.
+                            close_browser()
+                            downloader = ParallelDownloader(
+                                drawing_ids=drawing_list,
+                                credentials=credentials,
+                                download_dir=downloads_dir,
+                                threads_per_account=5,
+                                headless=True,
+                                abort_event=abort_monitor._aborted,
+                            )
+                            results = downloader.run()
+                            downloader.print_summary(results)
+                        else:
+                            print("Parallel downloads cancelled by user.")
+                    else:
+                        # credentials failed to load — fall through to sequential
+                        _sequential_download(
+                            change_types, runner, abort_monitor
+                        )
+                else:
+                    # No credentials.json — original sequential behaviour
+                    _sequential_download(change_types, runner, abort_monitor)
                 
             print(f"==========================================\n")
         else:

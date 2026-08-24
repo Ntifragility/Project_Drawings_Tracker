@@ -285,7 +285,9 @@ class SeleniumRunner:
 
         print("Login verified: Credentials accepted.")
 
-    def export_status_excel(self, timeout: int = 45) -> Path:
+    def navigate_to_explorer(self, timeout: int = 45) -> None:
+        """Navigate to the Explorer page, select ELECTRICA discipline, and
+        load the grid so that the search interface is ready for use."""
         wait = WebDriverWait(self.driver, timeout)
 
         try:
@@ -387,6 +389,10 @@ class SeleniumRunner:
             )
         except TimeoutException as e:
             raise RuntimeError(f"Grid data rows did not render in the DOM: {e}")
+
+    def export_status_excel(self, timeout: int = 45) -> Path:
+        self.navigate_to_explorer(timeout=timeout)
+        wait = WebDriverWait(self.driver, timeout)
 
         try:
             export_button = wait.until(

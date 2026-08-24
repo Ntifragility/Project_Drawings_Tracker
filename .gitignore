@@ -13,3 +13,5 @@ htmlcov/
 .idea/
 .vscode/
 diagnostics/
+credentials.json
+downloads/.tmp/
