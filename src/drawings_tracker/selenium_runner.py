@@ -471,7 +471,7 @@ class SeleniumRunner:
 
         raise RuntimeError("Download timed out or failed to complete.")
 
-    def _wait_and_move_new_file(self, existing_files: set[Path], timeout: int = 30) -> bool:
+    def _wait_and_move_new_file(self, existing_files: set[Path], drawing_id: str | None = None, timeout: int = 30) -> bool:
         downloaded = False
         timeout_time = time.time() + timeout
         while time.time() < timeout_time:
@@ -487,15 +487,16 @@ class SeleniumRunner:
                 new_file = max(completed_files, key=lambda p: p.stat().st_mtime)
                 print(f"Successfully downloaded file: {new_file.name}")
                 
-                # Move the file to drawings directory
+                # Move the file to appropriate category subfolder in drawings directory
+                from drawings_tracker.categorizer import get_category_folder
                 drawings_dir = Path("drawings").resolve()
-                drawings_dir.mkdir(parents=True, exist_ok=True)
-                dest_file = drawings_dir / new_file.name
+                category_dir = get_category_folder(drawings_dir, drawing_id or "", new_file.name)
+                dest_file = category_dir / new_file.name
                 try:
                     if dest_file.exists():
                         dest_file.unlink()
                     new_file.rename(dest_file)
-                    print(f"Moved drawing file to: drawings/{new_file.name}")
+                    print(f"Moved drawing file to: drawings/{category_dir.name}/{new_file.name}")
                 except Exception as move_err:
                     print(f"Could not move file to drawings folder: {move_err}")
                 break
@@ -564,7 +565,7 @@ class SeleniumRunner:
             raise RuntimeError(f"Could not find or click main 'Descargar' link: {e}")
 
         # Wait for first download completion and move to drawings folder
-        self._wait_and_move_new_file(existing_files)
+        self._wait_and_move_new_file(existing_files, drawing_id=drawing_id)
 
         # === DOWNLOAD FILE 2 (Adicionales) ===
         try:
@@ -624,7 +625,7 @@ class SeleniumRunner:
                     f"of {additional_count}..."
                 )
                 self._click_element(current_links[index])
-                self._wait_and_move_new_file(existing_files_2)
+                self._wait_and_move_new_file(existing_files_2, drawing_id=drawing_id)
             
         except Exception as e:
             self._capture_diagnostic(f"{drawing_id}_adicionales_failure")

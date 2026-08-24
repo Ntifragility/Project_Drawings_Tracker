@@ -288,7 +288,7 @@ class WorkerSession:
                     elapsed = time.time() - start
 
                     # Move completed files from temp dir to final drawings dir
-                    self._collect_downloaded_files()
+                    self._collect_downloaded_files(drawing_id)
 
                     self.reporter.report(DownloadResult(
                         drawing_id=drawing_id,
@@ -319,18 +319,21 @@ class WorkerSession:
                 except Exception:
                     pass
 
-    def _collect_downloaded_files(self) -> None:
-        """Move any new files from the temp directory to the shared drawings
-        folder (``downloads/drawings/``)."""
+    def _collect_downloaded_files(self, drawing_id: str | None = None) -> None:
+        """Move any new files from the temp directory to the appropriate category
+        subfolder under ``downloads/drawings/<CATEGORY>/``."""
+        from drawings_tracker.categorizer import get_category_folder
+
         drawings_dir = self.download_dir / "drawings"
         drawings_dir.mkdir(parents=True, exist_ok=True)
 
         for file in self.temp_dir.iterdir():
             if file.is_file() and not file.name.startswith("."):
-                dest = drawings_dir / file.name
+                category_dir = get_category_folder(drawings_dir, drawing_id or "", file.name)
+                dest = category_dir / file.name
                 if dest.exists():
                     # Avoid collisions by appending worker id
-                    dest = drawings_dir / f"{file.stem}_{self.worker_id}{file.suffix}"
+                    dest = category_dir / f"{file.stem}_{self.worker_id}{file.suffix}"
                 try:
                     shutil.move(str(file), str(dest))
                 except Exception as move_err:
